@@ -1,0 +1,4 @@
+*
+!*.py
+!readme*
+!.gitignore

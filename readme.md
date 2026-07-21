@@ -1,10 +1,10 @@
 ## 使用
-
+```
 python .\extract_qc_to_md.py "新任务25条测试.jsonl" `
 --crawl `
 --browser-fallback `
 --browser-fallback-limit 0
-
+```
 ## 已更新文件
 
 - 脚本：[extract_qc_to_md.py](D:\每日工作\rlwide search长期\extract_qc_to_md.py)

@@ -23,6 +23,32 @@ from urllib.parse import urlsplit
 IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<url>(?:[^()\s]|\([^()]*\))+)(?:\s+[\"'][^\"']*[\"'])?\)", re.IGNORECASE)
 DEFAULT_ENDPOINT = "https://api.ocr.space/parse/image"
 
+def load_dotenv(path: Path, override: bool = False) -> dict[str, str]:
+    """Load KEY=VALUE pairs from .env without requiring python-dotenv."""
+    loaded: dict[str, str] = {}
+    if not path.exists():
+        return loaded
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            raise ValueError(f"Invalid .env line {line_number}: expected KEY=VALUE")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise ValueError(f"Invalid .env key on line {line_number}: {key!r}")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'\"', "'"}:
+            value = value[1:-1]
+        loaded[key] = value
+        if override or key not in os.environ:
+            os.environ[key] = value
+    return loaded
+
+
 
 def clean_image_url(value: str) -> str:
     value = value.strip()
@@ -137,6 +163,7 @@ def replacement(text: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--env-file", type=Path, default=Path(__file__).resolve().with_name(".env"), help=".env file loaded before reading API/model environment variables")
     parser.add_argument("input", type=Path, help="Markdown file containing image links")
     parser.add_argument("-o", "--output", type=Path, help="Output Markdown; defaults to *_ocr.md")
     parser.add_argument("--image-dir", type=Path, help="Directory used to keep downloaded images")
@@ -155,6 +182,10 @@ def main() -> int:
     parser.add_argument("--refresh-ocr", action="store_true", help="Ignore successful cached OCR results")
     parser.add_argument("--keep-unprocessed-links", action="store_true", help="With --limit, retain image links not OCRed")
     args = parser.parse_args()
+    try:
+        load_dotenv(args.env_file.resolve())
+    except (OSError, ValueError) as exc:
+        parser.error(f"cannot load .env: {exc}")
     if args.language == "auto" and args.engine != 3:
         parser.error("--language auto requires --engine 3")
 

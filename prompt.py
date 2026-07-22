@@ -285,10 +285,12 @@ The response must denote the same country or accepted constituent country as the
     <eval_pipeline status="pass或fail">preprocess、metric、criterion 的问题</eval_pipeline>
   </evaluation_review>
   <issues>
-    <issue severity="critical或major或minor" area="answer或sources或evaluation">具体问题；没有则写 none</issue>
+    <!-- 有问题时输出一个或多个 issue；没有问题时将整个节点写成 <issues /> -->
+    <issue severity="critical或major或minor" area="answer或sources或evaluation">具体问题</issue>
   </issues>
   <recommended_changes>
-    <change>可执行修改建议；没有则写 none</change>
+    <!-- 有修改建议时输出一个或多个 change；没有建议时将整个节点写成 <recommended_changes /> -->
+    <change>可执行修改建议</change>
   </recommended_changes>
 </analysis_process>
 
@@ -312,6 +314,8 @@ The response must denote the same country or accepted constituent country as the
 - `result` 只能写 `PASS` 或 `FAIL`；
 - `status` 只能写 `pass` 或 `fail`；
 - 每个问题必须具体到列、结论、信源或规则，不要只写“存在问题”；
+- 没有问题时必须输出空节点 `<issues />`，不得伪造 `severity="none"` 或 `area="none"`；
+- 没有修改建议时必须输出空节点 `<recommended_changes />`；
 - XML 特殊字符必须转义：`&` 写成 `&amp;`，`<` 写成 `&lt;`，`>` 写成 `&gt;`；
 - 修正版 JSON 必须放在 CDATA 中，且必须是完整 JSON，不能写省略号、注释或伪代码；
 - 如果无需修正 evaluation，`corrected_evaluation` 的内容必须为 `null`，且 `required="false"`；

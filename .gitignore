@@ -2,3 +2,4 @@
 !*.py
 !readme*
 !.gitignore
+!.env.example

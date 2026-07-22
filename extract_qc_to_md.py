@@ -28,6 +28,7 @@ MARKDOWN_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 TRAILING_URL_CHARS = ".,;:!?\"'\u3002\uff0c\uff1b\uff1a\uff01\uff1f\u3001"
+WIKIPEDIA_HOST_RE = re.compile(r"(?:^|\.)wikipedia\.org$", re.IGNORECASE)
 
 
 def decode_json_object(value: Any) -> dict[str, Any]:
@@ -112,6 +113,24 @@ def normalize_url(url: str) -> str:
         return url
 
 
+def is_wikipedia_url(url: str) -> bool:
+    """Return True for any language/subdomain under wikipedia.org."""
+    try:
+        host = (urlsplit(clean_url(url)).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+    return bool(WIKIPEDIA_HOST_RE.search(host))
+
+
+def wikipedia_url_info(url: str) -> dict[str, Any]:
+    """Create a fixed display entry without issuing an HTTP request."""
+    return {
+        "url": url, "final_url": url, "success": True, "status_code": None,
+        "title": "\u7ef4\u57fa\u767e\u79d1", "description": "", "keywords": "", "error": "",
+        "method": "skip-wikipedia", "source_type": "wikipedia",
+    }
+
+
 def extract_source_urls(text: str) -> list[str]:
     """Extract source page URLs, excluding Markdown image/screenshot targets."""
     if not text:
@@ -178,6 +197,8 @@ async def crawl_url_infos(
     cache = load_url_cache(cache_path)
     pending = []
     for url in urls:
+        if is_wikipedia_url(url):
+            continue
         cached = cache.get(url)
         if refresh or cached is None or (retry_failures and not cached.get("success")):
             pending.append(url)
@@ -362,8 +383,13 @@ async def crawl4ai_fallback(
 
 def attach_url_infos(records: list[dict[str, Any]], cache: dict[str, dict[str, Any]]) -> None:
     for record in records:
-        record[URL_INFO_KEY] = [cache.get(url, {"url": url, "success": False, "error": "not crawled"})
-                                for url in extract_source_urls(record[LABEL_SOURCE])]
+        infos: list[dict[str, Any]] = []
+        for url in extract_source_urls(record[LABEL_SOURCE]):
+            if is_wikipedia_url(url):
+                infos.append(wikipedia_url_info(url))
+            else:
+                infos.append(cache.get(url, {"url": url, "success": False, "error": "not crawled"}))
+        record[URL_INFO_KEY] = infos
 
 
 def render_url_infos(infos: list[dict[str, Any]]) -> list[str]:
@@ -372,6 +398,9 @@ def render_url_infos(infos: list[dict[str, Any]]) -> list[str]:
     lines: list[str] = []
     for index, info in enumerate(infos, 1):
         url = info.get("url") or ""
+        if info.get("source_type") == "wikipedia" or info.get("method") == "skip-wikipedia":
+            lines.extend([f"#### {index}. \u7ef4\u57fa\u767e\u79d1", ""])
+            continue
         lines.append(f"#### {index}. {info.get('title') or url or EMPTY}")
         lines.append("")
         lines.append(f"- **URL**: {url or EMPTY}")
@@ -475,6 +504,7 @@ def main() -> int:
             url
             for record in records
             for url in extract_source_urls(record[LABEL_SOURCE])
+            if not is_wikipedia_url(url)
         ))
         try:
             cache = asyncio.run(crawl_url_infos(

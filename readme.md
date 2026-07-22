@@ -41,7 +41,8 @@ pip install aiohttp beautifulsoup4 lxml requests openai crawl4ai
 
 ```dotenv
 OCR_API_KEY=your_ocr_api_key
-llm_API_KEY=your_llm_api_key
+OCR_ENDPOINT=https://www.evern.ccwu.cc/ocr
+LLM_API_KEY=your_llm_api_key
 LLM_BASE_URL=https://tokenhub.tencentmaas.com/v1
 LLM_MODEL=deepseek-v4-pro-202606
 ```
@@ -118,20 +119,22 @@ python .\ocr_and_write.py `
   -o ".\data\新任务25条测试_qc_fields_ocr.md" `
   --image-dir ".\data\新任务25条测试_qc_fields_images" `
   --cache ".\data\新任务25条测试_qc_fields_ocr_cache.json" `
-  --endpoint "https://api.ocr.space/parse/image" `
-  --language auto `
-  --engine 3 `
+  --endpoint "https://www.evern.ccwu.cc/ocr" `
   --limit 0 `
   --download-workers 12 `
   --download-timeout 30 `
-  --ocr-timeout 120
+  --ocr-timeout 120 `
+  --ocr-delay 5 `
+  --ocr-retries 8 `
+  --ocr-retry-base-delay 15 `
+  --ocr-retry-max-delay 300
 ```
 
 主要行为：
 
 - 下载 Markdown 中全部唯一图片；
 - `--limit 0` 表示 OCR 全部图片；
-- `auto + Engine 3` 自动识别中文、英文和中英文混排；
+- ?? OCR ?? 自动识别中文、英文和中英文混排；
 - 删除输出 Markdown 中的图片链接；
 - 图片位置替换成 OCR 文字；
 - 复用已下载图片和模式一致的成功 OCR 缓存。
@@ -266,6 +269,10 @@ python .\run_all.py `
 | `--ocr-download-workers` | `12` | 图片下载并发数 |
 | `--ocr-download-timeout` | `30` | 图片下载超时秒数 |
 | `--ocr-timeout` | `120` | 单次 OCR 超时秒数 |
+| `--ocr-delay` | `5` | Minimum delay between OCR calls |
+| `--ocr-retries` | `8` | Retries for 429, 5xx, SSL, and connection errors |
+| `--ocr-retry-base-delay` | `15` | Initial retry delay in seconds |
+| `--ocr-retry-max-delay` | `300` | Maximum retry delay in seconds |
 | `--judge-workers` | `3` | LLM 并发数 |
 | `--judge-timeout` | `240` | 单次 LLM 请求超时秒数 |
 | `--judge-max-tokens` | `6000` | LLM 最大输出 token |
@@ -410,6 +417,7 @@ url_metadata_cache.json
 
 ```dotenv
 OCR_API_KEY=your_ocr_api_key
+OCR_ENDPOINT=https://www.evern.ccwu.cc/ocr
 ```
 
 已有系统环境变量优先。指定其他配置文件：
@@ -437,7 +445,7 @@ python .\ocr_and_write.py `
 
 1. 提取并去重所有 Markdown 图片链接；
 2. 并发下载全部唯一图片；
-3. 调用 OCR.Space；
+3. 调用自建 OCR 服务；
 4. 用 OCR 文字替换图片链接；
 5. 保存图片和 OCR 缓存。
 
@@ -449,26 +457,35 @@ python .\ocr_and_write.py `
 ）
 ```
 
-## 4.3 中英文自动识别
+## 4.3 自建 OCR 接口
 
-默认配置：
-
-```text
---language auto
---engine 3
-```
-
-该模式可在一次请求中识别中文、英文和中英文混排。
-
-也可以强制指定：
+默认接口：
 
 ```text
---language eng
---language chs
+https://www.evern.ccwu.cc/ocr
 ```
 
-`auto` 必须配合 Engine 3。
+请求协议：
 
+```text
+Header: x-api-key: <OCR_API_KEY>
+Multipart field: file
+Response: {"text": "..."}
+```
+
+接口直接返回中文、英文和中英文混排结果，不再传递 OCR.Space 的 language 或 engine 参数。 服务端稳定版及部署模板位于 `..\tmp`：`app.py`、`ocr-api.service`、`nginx-ocr.conf`、`server.env.example` 和 `DEPLOY.md`。
+
+可以通过 `.env` 修改接口：
+
+```dotenv
+OCR_ENDPOINT=https://www.evern.ccwu.cc/ocr
+```
+
+也可以临时使用：
+
+```powershell
+--endpoint "https://www.evern.ccwu.cc/ocr"
+```
 ## 4.4 少量测试
 
 OCR 可能产生费用，建议先测试 3～4 张：
@@ -513,13 +530,15 @@ python .\ocr_and_write.py `
 | `-o, --output` | `输入名_ocr.md` | 输出 Markdown |
 | `--image-dir` | `输入名_images` | 图片目录 |
 | `--cache` | `输入名_ocr_cache.json` | OCR 缓存 |
-| `--endpoint` | OCR.Space API | OCR 接口地址 |
-| `--language` | `auto` | `auto`、`eng` 或 `chs` |
-| `--engine` | `3` | OCR 引擎 |
+| `--endpoint` | ?? OCR ?? API | OCR 接口地址 |
 | `--limit` | `0` | OCR 图片数量，`0` 为全部 |
 | `--download-timeout` | `30` | 图片下载超时秒数 |
 | `--download-workers` | `12` | 图片下载并发数 |
 | `--ocr-timeout` | `120` | OCR 请求超时秒数 |
+| `--ocr-delay` | `5` | Minimum delay between OCR calls |
+| `--ocr-retries` | `8` | Retries for 429, 5xx, SSL, and connection errors |
+| `--ocr-retry-base-delay` | `15` | Initial retry delay in seconds |
+| `--ocr-retry-max-delay` | `300` | Maximum retry delay in seconds |
 | `--overwrite-images` | 关闭 | 强制重新下载图片 |
 | `--refresh-ocr` | 关闭 | 忽略成功 OCR 缓存 |
 | `--keep-unprocessed-links` | 关闭 | 保留未 OCR 的图片链接 |
@@ -535,7 +554,7 @@ python .\ocr_and_write.py `
 默认读取：
 
 ```dotenv
-llm_API_KEY=your_llm_api_key
+LLM_API_KEY=your_llm_api_key
 LLM_BASE_URL=https://tokenhub.tencentmaas.com/v1
 LLM_MODEL=deepseek-v4-pro-202606
 ```
@@ -670,7 +689,7 @@ python .\llm_judge.py `
 | `--csv` | 不生成 | 最终 CSV 路径 |
 | `--model` | `.env` 或内置值 | 模型名称 |
 | `--base-url` | `.env` 或内置值 | OpenAI 兼容接口 |
-| `--api-key-env` | `llm_API_KEY` | API Key 环境变量名 |
+| `--api-key-env` | `LLM_API_KEY` | API Key 环境变量名 |
 | `--workers` | `1` | LLM 并发数 |
 | `--limit` | `0` | 处理记录数，`0` 为全部 |
 | `--instance-id` | 空 | 只处理指定记录，可重复 |
@@ -730,13 +749,34 @@ Prompt 要求只输出两个 XML：
 
 # 7. 常见问题
 
+## OCR 429, SSL EOF, or aborted connections
+
+These normally indicate API rate limiting or a transient network failure, not necessarily an oversized image. The script now:
+
+- waits between normal OCR calls;
+- retries HTTP 429, HTTP 5xx, SSL EOF, connection aborts, and timeouts;
+- honors `Retry-After` when available, otherwise uses exponential backoff;
+- saves the cache immediately after each image.
+
+Rerun the original command to resume. Successful images are read from cache. If 429 errors remain frequent, slow it down further:
+
+```powershell
+python .\run_all.py ".\new_task.jsonl" `
+  --ocr-delay 4 `
+  --ocr-retries 10 `
+  --ocr-retry-base-delay 20 `
+  --ocr-retry-max-delay 300
+```
+
+Do not add `--refresh-ocr`, or successful cached images will be called again.
+
 ## 缺少 OCR 或 LLM Key
 
 检查 `.env`：
 
 ```dotenv
 OCR_API_KEY=...
-llm_API_KEY=...
+LLM_API_KEY=...
 ```
 
 单独运行脚本时也会默认加载同目录 `.env`。
@@ -775,3 +815,12 @@ python .\extract_qc_to_md.py --help
 python .\ocr_and_write.py --help
 python .\llm_judge.py --help
 ```
+
+# cd ocr && source venv_ocr_clean/bin/activate 
+
+nohup uvicorn app:app \
+--host 0.0.0.0 \
+--port 8000 \
+--workers 1 \
+--timeout-keep-alive 300 \
+> ocr.log 2>&1 &

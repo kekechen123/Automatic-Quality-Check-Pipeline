@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Download Markdown images, OCR them, and write a link-free Markdown copy.
 
-The default OCR endpoint is OCR.Space. Set OCR_API_KEY in the environment; the
+The default endpoint is the custom evern OCR service. Set OCR_API_KEY in the environment; the
 key is never written to output, logs, or cache files.
 """
 
@@ -13,6 +13,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import random
 import re
 import sys
 import time
@@ -21,7 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 IMAGE_RE = re.compile(r"!\[(?P<alt>[^\]]*)\]\((?P<url>(?:[^()\s]|\([^()]*\))+)(?:\s+[\"'][^\"']*[\"'])?\)", re.IGNORECASE)
-DEFAULT_ENDPOINT = "https://api.ocr.space/parse/image"
+DEFAULT_ENDPOINT = "https://www.evern.ccwu.cc/ocr"
 
 def load_dotenv(path: Path, override: bool = False) -> dict[str, str]:
     """Load KEY=VALUE pairs from .env without requiring python-dotenv."""
@@ -44,7 +45,7 @@ def load_dotenv(path: Path, override: bool = False) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'\"', "'"}:
             value = value[1:-1]
         loaded[key] = value
-        if override or key not in os.environ:
+        if override or not os.environ.get(key, "").strip():
             os.environ[key] = value
     return loaded
 
@@ -116,44 +117,91 @@ def download_image(url: str, target: Path, timeout: float, overwrite: bool) -> N
 
 
 def parse_ocr_response(data: Any) -> str:
+    """Parse the custom OCR API response: {"text": "..."}."""
     if not isinstance(data, dict):
         raise RuntimeError("OCR returned a non-object response")
-    if data.get("IsErroredOnProcessing"):
-        message = data.get("ErrorMessage") or data.get("ErrorDetails") or "OCR processing failed"
-        if isinstance(message, list):
-            message = "; ".join(str(item) for item in message)
+    text = data.get("text")
+    if not isinstance(text, str):
+        message = data.get("error") or data.get("message") or "OCR response has no text field"
         raise RuntimeError(str(message))
-    results = data.get("ParsedResults") or []
-    texts = [str(item.get("ParsedText") or "").strip() for item in results if isinstance(item, dict)]
-    text = "\n\n".join(item for item in texts if item).strip()
-    return text or "\uff08\u672a\u8bc6\u522b\u5230\u6587\u5b57\uff09"
+    return text.strip() or "\uff08\u672a\u8bc6\u522b\u5230\u6587\u5b57\uff09"
 
 
-def call_ocr_space(path: Path, api_key: str, endpoint: str, language: str, timeout: float, engine: int) -> str:
-    # OCR.Space Engine 3 supports language=auto and preserves mixed Chinese/English
-    # text in a single pass.  This avoids paying for separate eng/chs requests.
-    if language == "auto" and engine != 3:
-        raise ValueError("language=auto requires OCR engine 3")
+def call_ocr_once(path: Path, api_key: str, endpoint: str, timeout: float) -> str:
+    """Perform one request to the custom multipart OCR endpoint."""
     import requests
     mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    with path.open("rb") as image:
-        session = requests.Session()
+    with path.open("rb") as image, requests.Session() as session:
         session.trust_env = False
         response = session.post(
             endpoint,
-            headers={"apikey": api_key},
+            headers={"x-api-key": api_key},
             files={"file": (path.name, image, mime)},
-            data={
-                "language": language,
-                "isOverlayRequired": "false",
-                "detectOrientation": "true",
-                "scale": "true",
-                "OCREngine": str(engine),
-            },
             timeout=timeout,
         )
-    response.raise_for_status()
-    return parse_ocr_response(response.json())
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "")
+            error = requests.HTTPError("429 Too Many Requests", response=response)
+            error.retry_after = retry_after  # type: ignore[attr-defined]
+            raise error
+        response.raise_for_status()
+        return parse_ocr_response(response.json())
+
+
+def is_retryable_ocr_error(exc: Exception) -> bool:
+    """Return True for rate limits and transient network/server failures."""
+    import requests
+    if isinstance(exc, (requests.ConnectionError, requests.Timeout, requests.exceptions.SSLError)):
+        return True
+    if isinstance(exc, requests.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        return status == 429 or (status is not None and 500 <= status < 600)
+    return False
+
+
+def retry_delay(exc: Exception, attempt: int, base_delay: float, max_delay: float) -> float:
+    """Use Retry-After or exponential backoff with jitter to avoid retry storms."""
+    retry_after = getattr(exc, "retry_after", "")
+    if retry_after:
+        try:
+            raw_delay = max(base_delay, float(retry_after))
+        except (TypeError, ValueError):
+            raw_delay = base_delay * (2 ** max(0, attempt - 1))
+    else:
+        raw_delay = base_delay * (2 ** max(0, attempt - 1))
+    # Add 10-30% random jitter so several clients do not retry simultaneously.
+    jittered = raw_delay * random.uniform(1.10, 1.30)
+    return min(max_delay, max(base_delay, jittered))
+
+
+def call_ocr_with_retry(
+    path: Path,
+    api_key: str,
+    endpoint: str,
+    timeout: float,
+    retries: int,
+    retry_base_delay: float,
+    retry_max_delay: float,
+) -> tuple[str, int]:
+    """Call OCR with bounded exponential backoff and return text plus attempts."""
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 2):
+        try:
+            return call_ocr_once(path, api_key, endpoint, timeout), attempt
+        except Exception as exc:
+            last_error = exc
+            if attempt > retries or not is_retryable_ocr_error(exc):
+                raise
+            delay = retry_delay(exc, attempt, retry_base_delay, retry_max_delay)
+            print(
+                f"    transient OCR error ({type(exc).__name__}: {exc}); "
+                f"retry {attempt}/{retries} in {delay:.1f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+    assert last_error is not None
+    raise last_error
 
 
 def replacement(text: str) -> str:
@@ -169,15 +217,14 @@ def main() -> int:
     parser.add_argument("--image-dir", type=Path, help="Directory used to keep downloaded images")
     parser.add_argument("--cache", type=Path, help="OCR result cache JSON")
     parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="OCR API endpoint")
-    parser.add_argument(
-        "--language", choices=("auto", "eng", "chs"), default="auto",
-        help="OCR language: auto detects mixed Chinese/English (default); eng/chs force one language",
-    )
-    parser.add_argument("--engine", type=int, choices=(1, 2, 3), default=3, help="OCR.Space engine; auto language requires engine 3")
     parser.add_argument("--limit", type=int, default=0, help="OCR only the first N unique images; 0 means all")
     parser.add_argument("--download-timeout", type=float, default=30, help="Image download timeout in seconds")
     parser.add_argument("--download-workers", type=int, default=12, help="Concurrent image downloads")
     parser.add_argument("--ocr-timeout", type=float, default=120, help="OCR request timeout in seconds")
+    parser.add_argument("--ocr-delay", type=float, default=5.0, help="Minimum delay between OCR calls")
+    parser.add_argument("--ocr-retries", type=int, default=8, help="Retries for 429, 5xx, SSL, timeout, and connection errors")
+    parser.add_argument("--ocr-retry-base-delay", type=float, default=15, help="Initial retry backoff in seconds")
+    parser.add_argument("--ocr-retry-max-delay", type=float, default=300, help="Maximum retry backoff in seconds")
     parser.add_argument("--overwrite-images", action="store_true", help="Redownload existing image files")
     parser.add_argument("--refresh-ocr", action="store_true", help="Ignore successful cached OCR results")
     parser.add_argument("--keep-unprocessed-links", action="store_true", help="With --limit, retain image links not OCRed")
@@ -186,8 +233,6 @@ def main() -> int:
         load_dotenv(args.env_file.resolve())
     except (OSError, ValueError) as exc:
         parser.error(f"cannot load .env: {exc}")
-    if args.language == "auto" and args.engine != 3:
-        parser.error("--language auto requires --engine 3")
 
     input_path = args.input.resolve()
     output_path = (args.output or input_path.with_name(f"{input_path.stem}_ocr.md")).resolve()
@@ -243,8 +288,7 @@ def main() -> int:
         target = paths[url]
         cached = cache.get(url) or {}
         cache_matches_mode = (
-            cached.get("language") == args.language
-            and cached.get("engine") == args.engine
+            cached.get("provider") == "evern-custom-ocr"
             and cached.get("endpoint", DEFAULT_ENDPOINT) == args.endpoint
         )
         if cached.get("success") and cached.get("text") and cache_matches_mode and not args.refresh_ocr:
@@ -257,18 +301,26 @@ def main() -> int:
             results[url] = f"ocr\u5931\u8d25\uff1a\u56fe\u7247\u4e0b\u8f7d\u5931\u8d25\uff1a{message}"
             cache[url] = {
                 "success": False, "text": "", "image_path": str(target),
-                "language": args.language, "engine": args.engine, "endpoint": args.endpoint,
+                "provider": "evern-custom-ocr", "endpoint": args.endpoint,
+                "attempts": max(0, args.ocr_retries) + 1,
                 "ocr_at": time.strftime("%Y-%m-%d %H:%M:%S"), "error": message,
             }
             save_cache(cache_path, cache)
             continue
         try:
+            if args.ocr_delay > 0:
+                time.sleep(args.ocr_delay)
             print(f"[OCR {index}/{len(selected)}] {target.name}")
-            text = call_ocr_space(target, api_key, args.endpoint, args.language, args.ocr_timeout, args.engine)
+            text, attempts = call_ocr_with_retry(
+                target, api_key, args.endpoint, args.ocr_timeout,
+                max(0, args.ocr_retries), max(0.1, args.ocr_retry_base_delay),
+                max(0.1, args.ocr_retry_max_delay),
+            )
             results[url] = text
             cache[url] = {
                 "success": True, "text": text, "image_path": str(target),
-                "language": args.language, "engine": args.engine, "endpoint": args.endpoint,
+                "provider": "evern-custom-ocr", "endpoint": args.endpoint,
+                "attempts": attempts,
                 "ocr_at": time.strftime("%Y-%m-%d %H:%M:%S"), "error": "",
             }
         except Exception as exc:
@@ -277,7 +329,8 @@ def main() -> int:
             results[url] = f"ocr\u5931\u8d25\uff1a{message}"
             cache[url] = {
                 "success": False, "text": "", "image_path": str(target),
-                "language": args.language, "engine": args.engine, "endpoint": args.endpoint,
+                "provider": "evern-custom-ocr", "endpoint": args.endpoint,
+                "attempts": max(0, args.ocr_retries) + 1,
                 "ocr_at": time.strftime("%Y-%m-%d %H:%M:%S"), "error": message,
             }
             print(f"[OCR {index}/{len(selected)}] failed: {message}", file=sys.stderr)

@@ -50,7 +50,7 @@ def load_dotenv(path: Path, override: bool = False) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'\"', "'"}:
             value = value[1:-1]
         loaded[key] = value
-        if override or key not in os.environ:
+        if override or not os.environ.get(key, "").strip():
             os.environ[key] = value
     return loaded
 
@@ -445,7 +445,7 @@ def main() -> int:
     parser.add_argument("--csv", type=Path, help="Final CSV containing the latest result per instance_id")
     parser.add_argument("--model")
     parser.add_argument("--base-url")
-    parser.add_argument("--api-key-env", default="llm_API_KEY", help="Environment variable containing API key")
+    parser.add_argument("--api-key-env", default="LLM_API_KEY", help="Environment variable containing API key")
     parser.add_argument("--workers", type=int, default=1, help="Concurrent API requests")
     parser.add_argument("--limit", type=int, default=0, help="Process first N selected records; 0 means all")
     parser.add_argument("--instance-id", action="append", default=[], help="Only process this instance_id; repeatable")

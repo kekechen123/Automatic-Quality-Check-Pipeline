@@ -36,7 +36,7 @@ def load_dotenv(path: Path, override: bool = False) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
             value = value[1:-1]
         loaded[key] = value
-        if override or key not in os.environ:
+        if override or not os.environ.get(key, "").strip():
             os.environ[key] = value
     return loaded
 
@@ -67,6 +67,10 @@ def main() -> int:
     parser.add_argument("--ocr-download-workers", type=int, default=12)
     parser.add_argument("--ocr-download-timeout", type=int, default=30)
     parser.add_argument("--ocr-timeout", type=int, default=120)
+    parser.add_argument("--ocr-delay", type=float, default=5.0, help="Delay between OCR calls to reduce 429 errors")
+    parser.add_argument("--ocr-retries", type=int, default=8, help="Retries for OCR rate limits and transient network errors")
+    parser.add_argument("--ocr-retry-base-delay", type=float, default=15)
+    parser.add_argument("--ocr-retry-max-delay", type=float, default=300)
     parser.add_argument("--judge-workers", type=int, default=3)
     parser.add_argument("--judge-timeout", type=int, default=240)
     parser.add_argument("--judge-max-tokens", type=int, default=6000)
@@ -100,7 +104,7 @@ def main() -> int:
     env["LLM_MODEL"] = model
     env["LLM_BASE_URL"] = base_url
 
-    missing = [key for key in ("OCR_API_KEY", "llm_API_KEY") if not env.get(key, "").strip()]
+    missing = [key for key in ("OCR_API_KEY", "LLM_API_KEY") if not env.get(key, "").strip()]
     if missing and not args.dry_run:
         print(f"Missing required .env values: {', '.join(missing)}", file=sys.stderr)
         return 2
@@ -135,11 +139,15 @@ def main() -> int:
     ocr_command = [
         args.python, str(SCRIPT_DIR / "ocr_and_write.py"), str(qc_md),
         "-o", str(ocr_md), "--image-dir", str(image_dir), "--cache", str(ocr_cache),
-        "--endpoint", "https://api.ocr.space/parse/image",
-        "--language", "auto", "--engine", "3", "--limit", "0",
+        "--endpoint", env.get("OCR_ENDPOINT", "https://www.evern.ccwu.cc/ocr"),
+        "--limit", "0",
         "--download-workers", str(max(1, args.ocr_download_workers)),
         "--download-timeout", str(max(1, args.ocr_download_timeout)),
         "--ocr-timeout", str(max(1, args.ocr_timeout)),
+        "--ocr-delay", str(max(0, args.ocr_delay)),
+        "--ocr-retries", str(max(0, args.ocr_retries)),
+        "--ocr-retry-base-delay", str(max(0.1, args.ocr_retry_base_delay)),
+        "--ocr-retry-max-delay", str(max(0.1, args.ocr_retry_max_delay)),
     ]
     if args.refresh_ocr:
         ocr_command.append("--refresh-ocr")

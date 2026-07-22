@@ -377,6 +377,30 @@ python .\extract_qc_to_md.py `
   --crawl
 ```
 
+### 全量抓取完整参数示例
+
+下面的命令会提取全部记录、抓取普通信源，并把所有 HTTP 失败或内容不足的网址交给浏览器兜底。`--browser-fallback-limit 0` 表示浏览器兜底数量不设上限：
+
+```powershell
+python .\extract_qc_to_md.py `
+  ".\新任务25条测试.jsonl" `
+  -o ".\新任务25条测试_qc_fields.md" `
+  --crawl `
+  --concurrency 24 `
+  --timeout 20 `
+  --retries 1 `
+  --cache ".\url_metadata_cache.json" `
+  --retry-failures `
+  --browser-fallback `
+  --browser-fallback-limit 0
+```
+
+说明：
+
+- Wikipedia 链接仍会直接标记为“维基百科”，不会进入 HTTP 或浏览器抓取；
+- `--retry-failures` 会重试缓存中先前失败的普通网址；
+- 如需无条件重新抓取所有普通网址，可把 `--retry-failures` 改为 `--refresh`；
+- `--browser-fallback-limit 0` 可能明显增加运行时间和内存占用，适合确认需要全量兜底时使用。
 ### 第二步：测试 4 张图片
 
 ```powershell
@@ -396,6 +420,34 @@ python .\ocr_and_write.py `
   -o ".\新任务25条测试_qc_fields_ocr.md"
 ```
 
+### 全量 OCR 完整参数示例
+
+完成全量信源抓取后，可使用下面的完整参数对输出 Markdown 中的全部唯一图片执行中英文自动 OCR：
+
+```powershell
+$env:OCR_API_KEY="你的 OCR API Key"
+
+python .\ocr_and_write.py `
+  ".\新任务25条测试_qc_fields.md" `
+  -o ".\新任务25条测试_qc_fields_ocr.md" `
+  --image-dir ".\新任务25条测试_qc_fields_images" `
+  --cache ".\新任务25条测试_qc_fields_ocr_cache.json" `
+  --endpoint "https://api.ocr.space/parse/image" `
+  --language auto `
+  --engine 3 `
+  --limit 0 `
+  --download-workers 12 `
+  --download-timeout 30 `
+  --ocr-timeout 120
+```
+
+说明：
+
+- `--limit 0` 表示 OCR 全部唯一图片；
+- `--language auto --engine 3` 用一次请求识别中文、英文和中英文混排；
+- 已下载的图片会复用，不会重复下载；
+- 语言、引擎和 endpoint 一致的成功 OCR 缓存会复用，不会重复付费；
+- 不要随意添加 `--refresh-ocr`，否则会忽略成功缓存并重新调用 OCR。
 ---
 
 ## 5. 已完成的测试
